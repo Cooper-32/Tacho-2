@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tacho</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#0b6e5b">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f1f4f0;--ink:#15211d;--mute:#5b6a64;--panel:#fff;--line:#d3dad5;--acc:#0b6e5b;--accink:#fff;--slow:#2b7fff;--fast:#ff4d2e;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1513;--ink:#e7eee9;--mute:#93a39b;--panel:#172019;--line:#27342e;--acc:#4fd1b0;--accink:#06231b;--slow:#5aa0ff;--fast:#ff6a4d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1513;--ink:#e7eee9;--mute:#93a39b;--panel:#172019;--line:#27342e;--acc:#4fd1b0;--accink:#06231b;--slow:#5aa0ff;--fast:#ff6a4d;color-scheme:dark}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;gap:10px;padding:12px;box-sizing:border-box}
+.map{position:relative;flex:1;min-height:240px;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+.speed{position:absolute;left:10px;top:10px;pointer-events:none;background:var(--panel);opacity:.93;border-radius:10px;padding:6px 14px 8px}
+.num{font-family:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.speed .num{font-size:72px}
+.unit{color:var(--mute);font-size:14px;margin-top:2px}
+.status{position:absolute;left:10px;bottom:10px;max-width:58%;font-size:12px;color:var(--mute);background:var(--panel);opacity:.93;border-radius:8px;padding:5px 9px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.stat .num{font-size:34px;margin-top:4px}
+.stat small{color:var(--mute);font-size:13px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-weight:600;font-size:16px;border-radius:10px;padding:13px 16px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.main{flex:1;min-width:110px;background:var(--acc);color:var(--accink);border-color:var(--acc)}
+button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.demo{background:none;border:0;color:var(--mute);font-size:13px;font-weight:500;text-decoration:underline;padding:8px 4px}
+@media (min-width:760px){body{max-width:720px;margin:0 auto;width:100%}}
+</style>
+</head>
+<body>
+<div class="map" id="map">
+  <canvas id="cv" aria-label="Karte der gefahrenen Route"></canvas>
+  <div class="speed"><div class="num" id="v">0</div><div class="unit">km/h</div></div>
+  <div class="status" id="st">Bereit. Tippe auf Start, sobald du losfährst.</div>
+</div>
+<div class="stats">
+  <div class="stat"><small>Zeit</small><div class="num" id="t">0:00:00</div></div>
+  <div class="stat"><small>Strecke</small><div class="num" id="d">0,00 km</div></div>
+  <div class="stat"><small>Durchschnitt</small><div class="num" id="a">0,0 km/h</div></div>
+  <div class="stat"><small>Höchstgeschwindigkeit</small><div class="num" id="m">0,0 km/h</div></div>
+</div>
+<div class="bar">
+  <button class="main" id="go">Start</button>
+  <button id="lay">Satellit</button>
+  <button id="rs">Zurücksetzen</button>
+  <button class="demo" id="demo">Demo</button>
+</div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var S={run:false,pts:[],dist:0,max:0,speed:0,el:0,t0:0,watch:null,gap:false,demo:null,demoT:null,wl:null};
+var cv=$('cv'),cx=cv.getContext('2d'),W=0,H=0,dpr=1,raf=0;
+var LAYERS={
+  map:{u:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',at:'© OpenStreetMap-Mitwirkende'},
+  sat:{u:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',at:'Esri, Maxar, Earthstar Geographics'}
+};
+var layer='map',tiles={};
+try{if(localStorage.getItem('tacho-layer')==='sat')layer='sat'}catch(e){}
+function fmt(n,k){return n.toFixed(k).replace('.',',')}
+function hms(ms){var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60;return h+':'+(m<10?'0':'')+m+':'+(r<10?'0':'')+r}
+function hav(a,b){var R=6371000,r=Math.PI/180,dl=(b.lat-a.lat)*r,dn=(b.lon-a.lon)*r,x=Math.sin(dl/2)*Math.sin(dl/2)+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dn/2)*Math.sin(dn/2);return 2*R*Math.asin(Math.sqrt(x))}
+function elapsed(){return S.el+(S.run?Date.now()-S.t0:0)}
+function stats(){
+  var e=elapsed();
+  $('v').textContent=Math.round(S.speed);
+  $('t').textContent=hms(e);
+  $('d').textContent=fmt(S.dist/1000,2)+' km';
+  $('a').textContent=fmt(e>0?S.dist/1000/(e/3600000):0,1)+' km/h';
+  $('m').textContent=fmt(S.max,1)+' km/h';
+}
+function msg(t){$('st').textContent=t}
+function onPos(p){
+  var c=p.coords,t=p.timestamp,last=S.pts[S.pts.length-1],v=(c.speed!=null&&!isNaN(c.speed))?c.speed*3.6:null;
+  if(c.accuracy>40){msg('GPS ungenau (±'+Math.round(c.accuracy)+' m), warte auf besseren Empfang …');return}
+  var pt={lat:c.latitude,lon:c.longitude,t:t,v:0,gap:S.gap||!last};
+  if(last&&!S.gap){
+    var d=hav(last,pt),dt=(t-last.t)/1000;
+    if(dt<=0)return;
+    if(v==null)v=d/dt*3.6;
+    if(d<Math.max(3,c.accuracy/3)&&v<2){S.speed=0;stats();return}
+    S.dist+=d;
+  }
+  if(v==null)v=0;
+  if(v<1.5)v=0;
+  S.speed=v;pt.v=v;S.gap=false;
+  if(v>S.max&&v<400)S.max=v;
+  S.pts.push(pt);
+  msg('GPS aktiv, ±'+Math.round(c.accuracy)+' m');
+  stats();sched();
+}
+function onErr(e){
+  msg(e.code===1?'Standortzugriff verweigert. Bitte in den Browser-Einstellungen erlauben.':'Kein GPS-Signal. Bitte unter freiem Himmel versuchen.');
+}
+async function lock(){try{if(navigator.wakeLock)S.wl=await navigator.wakeLock.request('screen')}catch(e){}}
+function start(){
+  if(S.run)return;
+  S.run=true;S.t0=Date.now();S.gap=true;
+  $('go').textContent='Pause';
+  lock();
+  if(S.demo){startDemo();return}
+  if(!navigator.geolocation){msg('Dieses Gerät unterstützt keine Standortbestimmung.');return}
+  msg('Suche GPS-Signal …');
+  S.watch=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}
+function pause(){
+  if(!S.run)return;
+  S.el+=Date.now()-S.t0;S.run=false;S.speed=0;
+  if(S.watch!=null){navigator.geolocation.clearWatch(S.watch);S.watch=null}
+  if(S.demoT){clearInterval(S.demoT);S.demoT=null}
+  try{if(S.wl)S.wl.release()}catch(e){}
+  $('go').textContent='Weiter';msg('Pausiert.');stats();
+}
+function reset(){
+  pause();
+  S.pts=[];S.dist=0;S.max=0;S.speed=0;S.el=0;S.gap=false;
+  $('go').textContent='Start';msg('Bereit. Tippe auf Start, sobald du losfährst.');
+  stats();draw();
+}
+function startDemo(){
+  var lat=52.5200,lon=13.4050,hd=0,n=0;
+  msg('Demo: simulierte Fahrt');
+  S.demoT=setInterval(function(){
+    n++;var ms=10+7*Math.sin(n/9);hd+=0.045+0.02*Math.sin(n/23);
+    lat+=Math.cos(hd)*ms*0.5/111320;lon+=Math.sin(hd)*ms*0.5/(111320*Math.cos(lat*Math.PI/180));
+    onPos({coords:{latitude:lat,longitude:lon,accuracy:5,speed:ms},timestamp:Date.now()});
+  },500);
+}
+/* Karte: Web-Mercator-Kacheln, ohne Bibliothek */
+function wp(lat,lon,z){var n=256*Math.pow(2,z),s=Math.sin(lat*Math.PI/180);return{x:(lon+180)/360*n,y:(0.5-Math.log((1+s)/(1-s))/(4*Math.PI))*n}}
+function sched(){if(!raf)raf=requestAnimationFrame(function(){raf=0;draw()})}
+function tile(z,x,y){
+  var k=layer+z+'/'+x+'/'+y,t=tiles[k];
+  if(!t){t=tiles[k]=new Image();t.onload=function(){t.ok=1;sched()};
+    t.src=LAYERS[layer].u.replace('{z}',z).replace('{x}',x).replace('{y}',y)}
+  return t;
+}
+function mix(a,b,f){return[a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f]}
+function rgb(s){var m=s.trim();if(m.length===4)m='#'+m[1]+m[1]+m[2]+m[2]+m[3]+m[3];return[parseInt(m.substr(1,2),16),parseInt(m.substr(3,2),16),parseInt(m.substr(5,2),16)]}
+function size(){
+  dpr=window.devicePixelRatio||1;var r=cv.getBoundingClientRect();W=r.width;H=r.height;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cx.setTransform(dpr,0,0,dpr,0,0);draw();
+}
+function draw(){
+  var cs=getComputedStyle(document.documentElement),line=cs.getPropertyValue('--line'),mute=cs.getPropertyValue('--mute'),acc=cs.getPropertyValue('--acc').trim(),ink=cs.getPropertyValue('--ink'),panel=cs.getPropertyValue('--panel');
+  var c1=rgb(cs.getPropertyValue('--slow')),c2=rgb(cs.getPropertyValue('--fast'));
+  cx.clearRect(0,0,W,H);
+  cx.fillStyle=line;
+  for(var gx=16;gx<W;gx+=28)for(var gy=16;gy<H;gy+=28)cx.fillRect(gx,gy,1.5,1.5);
+  var P=S.pts;
+  if(!P.length){cx.fillStyle=mute;cx.font='14px system-ui,sans-serif';cx.textAlign='center';cx.fillText('Deine Route erscheint hier',W/2,H/2+30);return}
+  var mnLa=1e9,mxLa=-1e9,mnLo=1e9,mxLo=-1e9;
+  P.forEach(function(p){mnLa=Math.min(mnLa,p.lat);mxLa=Math.max(mxLa,p.lat);mnLo=Math.min(mnLo,p.lon);mxLo=Math.max(mxLo,p.lon)});
+  var padT=96,pad=34,aw=W-2*pad,ah=Math.max(60,H-padT-pad-20),z=17,a1,a2;
+  for(z=17;z>2;z--){a1=wp(mxLa,mnLo,z);a2=wp(mnLa,mxLo,z);if(a2.x-a1.x<=aw&&a2.y-a1.y<=ah)break}
+  a1=wp(mxLa,mnLo,z);a2=wp(mnLa,mxLo,z);
+  var left=(a1.x+a2.x)/2-(pad+aw/2),top=(a1.y+a2.y)/2-(padT+ah/2);
+  var n=Math.pow(2,z),tx0=Math.floor(left/256),tx1=Math.floor((left+W)/256),ty0=Math.floor(top/256),ty1=Math.floor((top+H)/256);
+  for(var tx=tx0;tx<=tx1;tx++)for(var ty=ty0;ty<=ty1;ty++){
+    if(ty<0||ty>=n)continue;
+    var im=tile(z,((tx%n)+n)%n,ty);
+    if(im.ok)cx.drawImage(im,Math.round(tx*256-left),Math.round(ty*256-top),256,256);
+  }
+  var Q=P.map(function(p){var w=wp(p.lat,p.lon,z);return{x:w.x-left,y:w.y-top,v:p.v,gap:p.gap}});
+  cx.lineCap='round';cx.lineJoin='round';
+  cx.lineWidth=9;cx.strokeStyle='rgba(255,255,255,.9)';
+  cx.beginPath();Q.forEach(function(q,i){if(i===0||q.gap)cx.moveTo(q.x,q.y);else cx.lineTo(q.x,q.y)});cx.stroke();
+  var ref=Math.max(S.max,10);cx.lineWidth=5;
+  for(var i=1;i<Q.length;i++){if(Q[i].gap)continue;
+    var m=mix(c1,c2,Math.min(1,Q[i].v/ref));
+    cx.strokeStyle='rgb('+m.map(Math.round).join(',')+')';
+    cx.beginPath();cx.moveTo(Q[i-1].x,Q[i-1].y);cx.lineTo(Q[i].x,Q[i].y);cx.stroke();
+  }
+  var a=Q[0],b=Q[Q.length-1];
+  cx.lineWidth=3;cx.strokeStyle=ink;cx.fillStyle=panel;cx.beginPath();cx.arc(a.x,a.y,6,0,7);cx.fill();cx.stroke();
+  cx.fillStyle=acc;cx.strokeStyle='#fff';cx.beginPath();cx.arc(b.x,b.y,8,0,7);cx.fill();cx.stroke();
+  /* Maßstab und Quellenangabe */
+  var mpp=156543.03392*Math.cos((mnLa+mxLa)/2*Math.PI/180)/n,nice=[5,10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000],L=5;
+  nice.forEach(function(v){if(v/mpp<=W*0.25)L=v});
+  var lw=L/mpp,bx=W-12-lw,by=H-30;
+  cx.fillStyle='rgba(255,255,255,.85)';cx.fillRect(bx-6,by-24,lw+12,32);
+  cx.strokeStyle='#222';cx.lineWidth=2;cx.beginPath();cx.moveTo(bx,by-5);cx.lineTo(bx,by);cx.lineTo(bx+lw,by);cx.lineTo(bx+lw,by-5);cx.stroke();
+  cx.fillStyle='#222';cx.font='12px system-ui,sans-serif';cx.textAlign='center';cx.fillText(L>=1000?(L/1000)+' km':L+' m',bx+lw/2,by-9);
+  var at=LAYERS[layer].at;cx.font='10px system-ui,sans-serif';var tw=cx.measureText(at).width;
+  cx.fillStyle='rgba(255,255,255,.85)';cx.fillRect(W-tw-12,H-16,tw+12,16);
+  cx.fillStyle='#222';cx.textAlign='right';cx.fillText(at,W-6,H-5);
+}
+$('go').onclick=function(){S.run?pause():start()};
+$('rs').onclick=reset;
+function setLayer(){$('lay').textContent=layer==='map'?'Satellit':'Karte';try{localStorage.setItem('tacho-layer',layer)}catch(e){}}
+$('lay').onclick=function(){layer=layer==='map'?'sat':'map';setLayer();draw()};
+$('demo').onclick=function(){
+  reset();S.demo=S.demo?null:1;
+  $('demo').textContent=S.demo?'Demo aus':'Demo';
+  msg(S.demo?'Demo-Modus: Start simuliert eine Fahrt.':'Bereit. Tippe auf Start, sobald du losfährst.');
+};
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&S.run)lock()});
+setInterval(function(){if(S.run)stats()},500);
+if(window.ResizeObserver)new ResizeObserver(size).observe($('map'));else window.addEventListener('resize',size);
+if('serviceWorker' in navigator&&/^https?:/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(function(){})}
+setLayer();size();stats();
+})();
+</script>
+</body>
+</html>
