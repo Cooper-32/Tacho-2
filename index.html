@@ -126,10 +126,10 @@ function startDemo(){
   var lat=52.5200,lon=13.4050,hd=0,n=0;
   msg('Demo: simulierte Fahrt');
   S.demoT=setInterval(function(){
-    n++;var ms=10+7*Math.sin(n/9);hd+=0.045+0.02*Math.sin(n/23);
+    n++;var ms=45+25*Math.sin(n/9);hd+=0.045+0.02*Math.sin(n/23);
     lat+=Math.cos(hd)*ms*0.5/111320;lon+=Math.sin(hd)*ms*0.5/(111320*Math.cos(lat*Math.PI/180));
     onPos({coords:{latitude:lat,longitude:lon,accuracy:5,speed:ms},timestamp:Date.now()});
-  },500);
+  },200);
 }
 /* Karte: Web-Mercator-Kacheln, ohne Bibliothek */
 function wp(lat,lon,z){var n=256*Math.pow(2,z),s=Math.sin(lat*Math.PI/180);return{x:(lon+180)/360*n,y:(0.5-Math.log((1+s)/(1-s))/(4*Math.PI))*n}}
